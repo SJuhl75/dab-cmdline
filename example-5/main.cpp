@@ -70,9 +70,19 @@ lockingQueue<message> messageQueue;
 #define	S_QUIT	0100
 #define	S_NEXT	0101
 
+#include <iostream>
+#include <vector>
+#include <thread>
+
 void    printOptions	(void);	// forward declaration
-void	listener	(void);
-void	selectNext	(void);
+void	listener		(void);
+void	ssrz_listener	(std::vector<uint8_t>);
+void	selectNext		(void);
+
+// Separate thread for ssrz_listener
+std::thread ssrz_thread;
+std::mutex data_mutex;  // Protect shared resources
+
 //	we deal with some callbacks, so we have some data that needs
 //	to be accessed from global contexts
 static
@@ -192,6 +202,18 @@ int16_t i;
 	   localBuf [8 + i] = data[i];
 	fprintf(stderr,"tdcServer::out[%d]\n",amount+8);
 	tdcServer. sendData (localBuf, amount + 8);
+
+	// Pass the data to the separate thread
+	// std::vector<uint8_t> data_buffer(localBuf, localBuf + amount + 8);
+	// std::thread ssrz_thread(ssrz_listener, data_buffer);
+	// Pass data to ssrz_listener thread
+	if (ssrz_thread.joinable()) {
+	   ssrz_thread.join();  // Ensure previous thread is done
+	}
+	std::vector<uint8_t> data_buffer(localBuf, localBuf + amount + 8);
+	ssrz_thread = std::thread(ssrz_listener,data_buffer);
+	
+
 #else
 	(void)data;
 	(void)amount;
@@ -498,12 +520,13 @@ bool	err;
 	}
 
 	run. store (true);
+	//	ssrzr_thread.detach();  // Detach the thread to allow it to run independently
 	std::thread keyboard_listener = std::thread (&listener);
         /* std::cerr << "we try to start program " <<
                                                  programName << "\n"; */
 
 	// Search Ensemble for selected programName
-        audiodata ad;
+    audiodata ad;
 	packetdata pd;
 	ad.defined = pd.defined = false; // seems to be necessary
 	while ((ad. defined == pd .defined) && (--progSyncTime >= 0)) {
@@ -628,6 +651,17 @@ int16_t	foundIndex	= -1;
 	}
 	dabReset_msc (theRadio);
         set_audioChannel (theRadio, &ad);
+}
+
+
+// The thread listener function
+void ssrz_listener(std::vector<uint8_t> buffer) {
+    std::lock_guard<std::mutex> lock(data_mutex);  // Ensure thread-safety
+    // Process the data (e.g., logging or other custom operations)
+    //std::cout << "Processing data in separate thread, size: " << data_buffer.size() << std::endl;
+	std::cout << "Processing data in ssrz_listener, size: " << buffer.size() << std::endl;
+
+    // Add your specific data handling logic here
 }
 
 void	listener	(void) {
