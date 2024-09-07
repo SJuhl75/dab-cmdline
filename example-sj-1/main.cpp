@@ -1,7 +1,9 @@
 /*
- *    In gratitude for the example provided by
+ *    Copyright (C) 2015, 2016, 2017
  *    Jan van Katwijk (J.vanKatwijk@gmail.com)
  *    Lazy Chair Computing
+ *
+ *    This file is part of the DAB-library
  *
  *    DAB-library is free software; you can redistribute it and/or modify
  *    it under the terms of the GNU General Public License as published by
@@ -17,7 +19,7 @@
  *    along with DAB-library; if not, write to the Free Software
  *    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- *	E X A M P L E  P R O G R A M 
+ *	E X A M P L E  P R O G R A M
  *	for the DAB-library
  */
 #include	<unistd.h>
@@ -32,11 +34,6 @@
 #include	"dab-api.h"
 #include	"locking-queue.h"
 #include	"includes/support/band-handler.h"
-// Hardcoded DataStreamer + RTL_TCP
-#define DATA_STREAMER 1
-#define HAVE_RTL_TCP 1
-
-
 #ifdef	HAVE_SDRPLAY
 #include	"sdrplay-handler.h"
 #elif	HAVE_AIRSPY
@@ -51,7 +48,7 @@
 #include	"rtl_tcp-client.h"
 #endif
 
-
+#define DATA_STREAMER true
 #include	<atomic>
 #include	<thread>
 #ifdef	DATA_STREAMER
@@ -73,8 +70,19 @@ lockingQueue<message> messageQueue;
 #define	S_QUIT	0100
 #define	S_NEXT	0101
 
+#include <iostream>
+#include <vector>
+#include <thread>
+
 void    printOptions	(void);	// forward declaration
-void	listener	(void);
+void	listener		(void);
+void	ssrz_listener	(std::vector<uint8_t>);
+void	selectNext		(void);
+
+// Separate thread for ssrz_listener
+std::thread ssrz_thread;
+std::mutex data_mutex;  // Protect shared resources
+
 //	we deal with some callbacks, so we have some data that needs
 //	to be accessed from global contexts
 static
@@ -99,45 +107,14 @@ audioBase	*soundOut	= NULL;
 tcpServer	tdcServer (8888);
 #endif
 
-// SSRZ correction are broadcasted using channel 5C program name PPP-RTK-AdV
-std::string	programName		= "PPP-RTK-AdV";
-//int32_t		serviceIdentifier	= -1;
-
+// Relaxed matching
 bool matches(const std::string& s1, const std::string& s2) {
     // Trim s1 to the length of s2 and compare
     return s1.substr(0, s2.size()) == s2;
 }
 
-// Debug function with variable arguments using std::cout
-void debugPrintCPP(const char* callerFunction, const char* format, ...) {
-/*    va_list args;
-    va_start(args, format);
-
-    // Determine the size of the formatted string
-    va_list args_copy;
-    va_copy(args_copy, args);
-    int size = std::vsnprintf(nullptr, 0, format, args_copy);
-    va_end(args_copy);
-
-    // Allocate a buffer and format the string
-    char* buffer = new char[size + 1];
-    std::vsnprintf(buffer, size + 1, format, args);
-
-    // Output to std::cout
-    // std::cout << buffer;
-    // std::cout << "[" << __FILE__ << "][" << __FUNCTION__ << "][" << __LINE__ << "]: " << buffer;
-    std::cout << "[" << callerFunction << "]: " << buffer;
-
-    // Clean up
-    delete[] buffer;
-
-    va_end(args);*/
-}
-
-
-// Wrapper macro to capture __FUNCTION__ or __func__
-#define dbg(format, ...) debugPrintCPP(__func__, format, ##__VA_ARGS__)
-
+std::string	programName		= "Sky Radio";
+//int32_t		serviceIdentifier	= -1;
 
 static void sighandler (int signum) {
 	fprintf (stderr, "Signal caught, terminating!\n");
@@ -193,7 +170,6 @@ void	programdata_Handler (audiodata *d, void *ctx) {
 static
 void	dataOut_Handler (const char * dynamicLabel, void *ctx) {
 	(void)ctx;
-	fprintf( stderr, "DBG: dataOut_Handler invoked.\n");
 	fprintf (stderr, "%s\n", dynamicLabel);
 }
 //
@@ -211,7 +187,6 @@ void	dataOut_Handler (const char * dynamicLabel, void *ctx) {
 static
 void	bytesOut_Handler (uint8_t *data, int16_t amount,
 	                  uint8_t type, void *ctx) {
-	fprintf( stderr, "DBG: bytesOut_Handler = %d bytes.\n", amount);
 #ifdef DATA_STREAMER
 uint8_t localBuf [amount + 8];
 int16_t i;
@@ -225,7 +200,20 @@ int16_t i;
 	localBuf [7] = type == 0 ? 0 : 0xFF;
 	for (i = 0; i < amount; i ++)
 	   localBuf [8 + i] = data[i];
+	fprintf(stderr,"tdcServer::out[%d]\n",amount+8);
 	tdcServer. sendData (localBuf, amount + 8);
+
+	// Pass the data to the separate thread
+	// std::vector<uint8_t> data_buffer(localBuf, localBuf + amount + 8);
+	// std::thread ssrz_thread(ssrz_listener, data_buffer);
+	// Pass data to ssrz_listener thread
+	if (ssrz_thread.joinable()) {
+	   ssrz_thread.join();  // Ensure previous thread is done
+	}
+	std::vector<uint8_t> data_buffer(localBuf, localBuf + amount + 8);
+	ssrz_thread = std::thread(ssrz_listener,data_buffer);
+	
+
 #else
 	(void)data;
 	(void)amount;
@@ -267,32 +255,26 @@ void	fibQuality	(int16_t q, void *ctx) {
 
 static
 void	mscQuality	(int16_t fe, int16_t rsE, int16_t aacE, void *ctx) {
-//	fprintf (stderr, "msc quality = %d %d %d\n", fe, rsE, aacE);
+	fprintf (stderr, "msc quality = %d %d %d\n", fe, rsE, aacE);
 }
-
-/*#void    dabProcessor::data_for_DataService	(const std::string &s,packetdata *d, int16_t c) {
-#	std::string ss = s;
-#	fprintf( stderr, "DBG: fic->dataforDataService\n");
-#        my_ficHandler. dataforDataService (ss, d, c);
-#}*/
 
 int	main (int argc, char **argv) {
 // Default values
 uint8_t		theMode		= 1;
-std::string	theChannel	= "5C";
+std::string	theChannel	= "11C";
 uint8_t		theBand		= BAND_III;
-int16_t		ppmCorrection	= -2; // BLOG V4 // V3 -3
+int16_t		ppmCorrection	= 0;
 #ifdef	HAVE_SDRPLAY
 int16_t		GRdB		= 30;
 int16_t		lnaState	= 2;
 #else
-int		theGain		= 18;	// 35 scale = 0 .. 100
+int		theGain		= 35;	// scale = 0 .. 100
 #endif
 std::string	soundChannel	= "default";
 int16_t		latency		= 10;
-int16_t		timeSyncTime	= 10; // 5
-int16_t		freqSyncTime	= 15;
-int16_t		dataSyncTime	= 15;
+int16_t		timeSyncTime	= 5;
+int16_t		freqSyncTime	= 10;
+int16_t		progSyncTime	= 5;
 bool		autogain	= false;
 int	opt;
 struct sigaction sigact;
@@ -303,35 +285,28 @@ std::string	fileName;
 #elif	HAVE_RAWFILES
 std::string	fileName;
 #elif HAVE_RTL_TCP
-std::string	hostname = "192.168.178.61";	//127.0.0.1";		// default
+std::string	hostname = "127.0.0.1";		// default
 int32_t		basePort = 1234;		// default
 #endif
 bool	err;
 
 	fprintf (stderr, "dab_cmdline V 1.0alfa example 5,\n \
 	                  Copyright 2017 J van Katwijk, Lazy Chair Computing\n");
-	dbg("dab_cmdline V 1.0alfa example 5,\n \
-	                  Copyright 2017 J van Katwijk, Lazy Chair Computing\n");
-	dbg("** SSRZ via PPP-RTK-AdV via Channel 5C by Stefan Juhl\n");
-#ifdef	DATA_STREAMER
-	fprintf(stderr,"** Built-in TDC Server @port 8888 .. ");
-#endif
 	timeSynced.	store (false);
 	timesyncSet.	store (false);
 	run.		store (false);
 
-/*	if (argc == 1) {
+	if (argc == 1) {
 	   printOptions ();
 	   exit (1);
-	}*/
+	}
 
 //	For file input we do not need options like Q, G and C,
 //	We do need an option to specify the filename
 #if	(defined (HAVE_WAVFILES) && defined (HAVE_RAWFILES))
 	while ((opt = getopt (argc, argv, "D:d:M:B:P:A:L:S:F:O:")) != -1) {
 #elif   HAVE_RTL_TCP
-	while ((opt = getopt (argc, argv, "D:d:M:B:C:P:G:A:L:S:QO:")) != -1) {
-//	while ((opt = getopt (argc, argv, "D:d:M:B:C:P:G:A:L:S:H:I:QO:")) != -1) {
+	while ((opt = getopt (argc, argv, "D:d:M:B:C:P:G:A:L:S:H:QO:")) != -1) { // Arg H has to be included
 #else
 	while ((opt = getopt (argc, argv, "D:d:M:B:C:P:G:A:L:S:H:I:QO:")) != -1) {
 #endif
@@ -466,11 +441,10 @@ bool	err;
 	}
 //
 	if (soundOut == nullptr) {	// not bound to a file?
-	   // Disable initalization sound at all! (we dont need it for data reception)
-	   // soundOut	= new audioSink	(latency, soundChannel, &err);
+	   soundOut	= new audioSink	(latency, soundChannel, &err);
 	   if (err) {
-	      fprintf (stderr, "no valid sound channel, fatal\n");
-	      //exit (33);
+	      fprintf (stderr, "DBG: no valid sound channel\n"); // , fatal\n");
+	      //exit (33); // Be more tolerant to the guys, running this piece of software on a head- and phoneless server
 	   }
 	}
 //
@@ -546,59 +520,56 @@ bool	err;
 	}
 
 	run. store (true);
+	//	ssrzr_thread.detach();  // Detach the thread to allow it to run independently
 	std::thread keyboard_listener = std::thread (&listener);
-	
+        /* std::cerr << "we try to start program " <<
+                                                 programName << "\n"; */
+
 	// Search Ensemble for selected programName
-	packetdata pd;      
-	while (!pd. defined && (--dataSyncTime >= 0)) {
-	   for (int16_t i = 0; i < programNames. size (); i ++) {
+    audiodata ad;
+	packetdata pd;
+	ad.defined = pd.defined = false; // seems to be necessary
+	while ((ad. defined == pd .defined) && (--progSyncTime >= 0)) {
+	   for (uint8_t i = 0; i < programNames. size (); i ++) {
 	      if (matches (programNames [i], programName)) {
 		 programName = programNames [i];
-	         dataforDataService (theRadio, programName. c_str (), &pd, 0);
-		 fprintf (stderr, "we now try to start program %s\n", programName. c_str ());
-		 if (!pd. defined) {
+		 fprintf (stderr, "we now try to start program %s ", programName. c_str ());
+                 if (is_audioService (theRadio, programName. c_str ())) { 
+                    dataforAudioService (theRadio, programName. c_str (), &ad, 0);
+		    dabReset_msc (theRadio);
+     		    set_audioChannel (theRadio, &ad);
+     		    fprintf(stderr,"(audio) \n");
+                 } else if (is_dataService (theRadio, programName. c_str ())) {
+		    dataforDataService (theRadio, programName. c_str (), &pd, 0);
+		    dabReset_msc (theRadio);
+	     	    set_dataChannel (theRadio, &pd);
+	     	    fprintf(stderr,"\n"); // (data) is already part of the program name
+                 } else {
+		    fprintf(stderr,"Should not happen");
+                 }
+		 if (ad. defined == pd. defined) {
 		    std::cerr << "sorry  we cannot handle service " << programName << "\n";
 	      	    sighandler (9);
 		 }
-		 dabReset_msc (theRadio);
-		 set_dataChannel (theRadio, &pd);
 		 break;
 	      }
 	   }
-	   if (!pd. defined) {
-	      sleep(1);
-	      dataSyncTime++;
-	   } else {
-	   	if (!is_dataService (theRadio, programName. c_str ())) { 
-		   sleep(1);
-		   dabReset_msc (theRadio);
-		   sleep(1);
-     		   set_dataChannel (theRadio, &pd);
-     		   sleep(1);
+	   if (ad. defined == pd. defined) { 
+	   	fprintf (stderr, ">>> %d\r\r\r\r\r", progSyncTime);
+	   	if (progSyncTime == 0) { 
+	   	   programName = programNames [0]; // Fallback to first program of ensemble
+	   	   progSyncTime = 2;
 	   	}
+	   	sleep(1); 
 	   }
 	}
 	
-	/* Handle Data Service */
-	std::cerr << "** DBG: Packet Data Check @" << programName << endl;
-        if (!is_dataService (theRadio, programName. c_str ())) {
-           std::cerr << "sorry  we cannot handle service " <<
-                                                 programName << "\n";
-           run. store (false);
-	   exit (22);
-        }
-
 	while (run. load ()) {
 	   message m;
 	   while (!messageQueue. pop (10000, &m));
 	   switch (m. key) {
 	      case S_NEXT:
-	         std::cerr << "Tune in: " << programName << "\n";
-		 sleep(1);
-	         dataforDataService (theRadio, programName. c_str (), &pd, 0);
-	         dabReset_msc (theRadio);
-                 set_dataChannel (theRadio, &pd);
-                 sleep(1);
+	         selectNext ();
 	         break;
 	      case S_QUIT:
 	         run. store (false);
@@ -632,11 +603,69 @@ void    printOptions (void) {
 	                  -A name     select the audio channel (portaudio)\n\
 	                  -S hexnumber use hexnumber to identify program\n\n\
 	                  -O filename put the output into a file rather than through portaudio\n");
+#ifdef HAVE_RTL_TCP
+	fprintf (stderr,
+"\n                          RTL_TCP server options\n\
+			  -H IP adress\n\
+	                  -I Port to connect to\n");
+
+#endif
+}
+
+void	selectNext	(void) {
+uint8_t	i;
+int16_t	foundIndex	= -1;
+
+	for (i = 0; i < programNames. size (); i ++) {
+	   if (matches (programNames [i], programName)) {
+	      if (i == programNames. size () - 1)
+	         foundIndex = 0;
+	      else
+	         foundIndex = i + 1;
+	      break;
+	   }
+	}
+
+	if (foundIndex == -1) {
+	   fprintf (stderr, "system error\n");
+	   sighandler (9);
+	   exit (1);
+	}
+
+//	skip the data services. Slightly dangerous here, may be
+//	add a guard for "only data services" ensembles
+	while (!is_audioService (theRadio,
+                                 programNames [foundIndex]. c_str ()))
+	   foundIndex = (foundIndex + 1) % programNames. size ();
+
+	programName	= programNames [foundIndex];
+	fprintf (stderr, "we now try to start program %s\n",
+	                                         programName. c_str ());
+
+	audiodata ad;
+        dataforAudioService (theRadio, programName. c_str (), &ad, 0);
+        if (!ad. defined) {
+           std::cerr << "sorry  we cannot handle service " <<
+                                                 programName << "\n";
+	   sighandler (9);
+	}
+	dabReset_msc (theRadio);
+        set_audioChannel (theRadio, &ad);
 }
 
 
+// The thread listener function
+void ssrz_listener(std::vector<uint8_t> buffer) {
+    std::lock_guard<std::mutex> lock(data_mutex);  // Ensure thread-safety
+    // Process the data (e.g., logging or other custom operations)
+    //std::cout << "Processing data in separate thread, size: " << data_buffer.size() << std::endl;
+	std::cout << "Processing data in ssrz_listener, size: " << buffer.size() << std::endl;
+
+    // Add your specific data handling logic here
+}
+
 void	listener	(void) {
-	fprintf (stderr, "Listener::run\n");
+	fprintf (stderr, "listener::run\n");
 	while (run. load ()) {
 	   char t = getchar ();
 	   message m;
