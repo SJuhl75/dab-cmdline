@@ -70,18 +70,21 @@ lockingQueue<message> messageQueue;
 #define	S_QUIT	0100
 #define	S_NEXT	0101
 
-#include <iostream>
-#include <vector>
-#include <thread>
+//#include <iostream>
+//#include <vector>
+//#include <thread>
 
 void    printOptions	(void);	// forward declaration
-void	listener		(void);
+void	listener	(void);
+void	selectNext	(void);
 void	ssrz_listener	(std::vector<uint8_t>);
-void	selectNext		(void);
+
+// Include the ssrzrcv.cpp file directly (NOT recommended -> use ssrzrcv.h)
+#include "ssrzrcv.cpp"
+std::mutex data_mutex;  // Define the mutex here to protect shared ressources
 
 // Separate thread for ssrz_listener
 std::thread ssrz_thread;
-std::mutex data_mutex;  // Protect shared resources
 
 //	we deal with some callbacks, so we have some data that needs
 //	to be accessed from global contexts
@@ -655,14 +658,14 @@ int16_t	foundIndex	= -1;
 
 
 // The thread listener function
-void ssrz_listener(std::vector<uint8_t> buffer) {
+/*void ssrz_listener(std::vector<uint8_t> buffer) {
     std::lock_guard<std::mutex> lock(data_mutex);  // Ensure thread-safety
     // Process the data (e.g., logging or other custom operations)
     //std::cout << "Processing data in separate thread, size: " << data_buffer.size() << std::endl;
 	std::cout << "Processing data in ssrz_listener, size: " << buffer.size() << std::endl;
 
     // Add your specific data handling logic here
-}
+}*/
 
 void	listener	(void) {
 	fprintf (stderr, "listener::run\n");
