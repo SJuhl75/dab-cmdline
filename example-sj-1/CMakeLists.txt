@@ -56,7 +56,8 @@ endif ()
 
 if(DEFINED RTL_TCP)
    set(RTL_TCP true)
-   set(objectName dab-rtl_tcp-5)
+   #set(objectName dab-rtl_tcp-5)
+   set(objectName dab-ssrz)
 endif ()
 
 if (DEFINED SERVER)

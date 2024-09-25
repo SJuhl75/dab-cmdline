@@ -90,9 +90,10 @@ int32_t offset  = 0;
 uint8_t *data   = (uint8_t *)(m. data ());
 int32_t size    = m. size ();
 int16_t i;
+uint8_t tempb;
    
    // Get a brief overview of the input data
-   fprintf(stderr,"DBG::tdc_dataHandler[%d]:", size/8);
+   fprintf(stderr,"DBG::tdc_dataHandler[%4d bits]:", size);
 
    // Add MSC Data Group header processing
    uint8_t  extflg  = getBits (data,  0, 1);  // Extension Field Present Flag (see ETSI EN 300 401 - MSC data group header)
@@ -121,82 +122,98 @@ int16_t i;
       fprintf(stderr,"%s ",dgcrc==chkcrc?"✓":"X");
    } else { fprintf(stderr,"- "); }
 
+   fprintf(stderr,"---> MSCDG <---\n");
+   for (i = 0; i < size; i ++) {
+	   tempb = getBits (data, i * 8, 8);
+      fprintf(stderr,"%02x",tempb);
+   } fprintf(stderr,"\n---> MSCDG <---\n"); 
+   
+
    // we maintain offsets in bits, the "m" array has one bit per byte
    while (offset < size) {
-      while (offset + 16 < size) {
+      while (offset +16 < size) {
          if (getBits (data, offset, 16) == 0xFF0F) {
-            break;
-         }
-         else
+            break; // TPEG syncword found
+         /* Theoretically, we could also have a SSRZ syncword check here, however data is split across multiple MSC data groups ...
+            } else if (getBits_8(data, offset) == 0xD3 && getBits(data, offset+24, 16) == 0xFFA7 ) {
+            break; // SSRZ sync found */
+         } else {
             offset += 8;
          }
-         if (offset + 16 >= size) { 
+         if ((offset + 16) >= size) { 
             // NO syncword found! -> Output anyway, if CRC of data group is OK
             if (crcflg==1 && dgcrc==chkcrc) { 
-               uint16_t length = size/8-((crcflg==1)?4:2)-dfoff/8;
-               fprintf(stderr,"RAW off=%d len=%d\n",dfoff,length); // (size-(crcflg==1)?32:16));
-               #ifdef _MSC_VER
-                  uint8_t *buffer = (uint8_t *)_alloca(length);
-               #else
-                  uint8_t buffer[length];
-               #endif
-               if (bytesOut != nullptr)
-                  bytesOut (buffer, length, 2, ctx);
-            }
+               uint16_t length = size-32;                            // getBits(data, offset + 8, 16);
+               uint16_t offsett = handleSSRZFrame(data, 16, length); //
+               fprintf(stderr,"RAW len=%d off=%d last=0x%04x\n",dfoff,length,offsett,getBits(data, size-32, 16)); // (size-(crcflg==1)?32:16));
+            } 
             return;
          }
-
-// we have a syncword
-//	uint16_t syncword    = getBits (data, offset,      16);
-	uint16_t length      = getBits (data, offset + 16, 16);
-//	uint16_t crc         = getBits (data, offset + 32, 16); 
-
-   uint8_t frametypeIndicator = getBits (data, offset + 6 * 8,  8);
-   if ((length < 0) || (length >= (size - offset) / 8))
-      return;           // garbage
-
-   uint8_t sida = getBits (data, offset + 7 * 8, 8);
-   uint8_t sidb = getBits (data, offset + 8 * 8, 8);
-   uint8_t sidc = getBits (data, offset + 9 * 8, 8);
-   fprintf(stderr,"TPEG Frame%d SID=%d.%d.%d ",frametypeIndicator,sida,sidb,sidc);
+      }
    
-   if (length >= 11) {
-      // OK, prepare to check the crc
-      uint8_t checkVector [18];
+   uint16_t length = 0;
+   /* if (!TPEGsync) { /// SSRZ Frame handling
+      length = getBits(data, offset + 8, 16);
+      // offset+5*8 = ?
+      fprintf(stderr,"\nSSRZ Frame[%d] si=%d |",length,size);
+      if (length > size) return;
+      for (i = 0; i < length; i ++) {
+         fprintf(stderr,"%02x",getBits(data, offset + (6+i)*8 + i , 8));
+      } fprintf(stderr,"|\n");
+      offset = handleSSRZFrame(data, offset + 6 * 8, length); */
+   while (true) { //}} else {
+      // we have a syncword
+      //	uint16_t syncword    = getBits (data, offset,      16);
+	   length      = getBits (data, offset + 16, 16);
+      //	uint16_t crc         = getBits (data, offset + 32, 16); 
+
+      uint8_t frametypeIndicator = getBits (data, offset + 6 * 8,  8);
+      if ((length < 0) || (length >= (size - offset) / 8))
+         return;           // garbage
+
+      uint8_t sida = getBits (data, offset + 7 * 8, 8);
+      uint8_t sidb = getBits (data, offset + 8 * 8, 8);
+      uint8_t sidc = getBits (data, offset + 9 * 8, 8);
+      fprintf(stderr,"TPEG Frame%d SID=%d.%d.%d ",frametypeIndicator,sida,sidb,sidc);
+   
+      if (length >= 11) {
+         // OK, prepare to check the crc
+         uint8_t checkVector [18];
       
-      // first the syncword and the length
-      for (i = 0; i < 4; i ++) {
-         checkVector [i] = getBits (data, offset + i * 8, 8);
-      }
+         // first the syncword and the length
+         for (i = 0; i < 4; i ++) {
+            checkVector [i] = getBits (data, offset + i * 8, 8);
+         }
 
-      // we skip the crc in the incoming data and take the frametype
-      checkVector [4] = getBits (data, offset + 6 * 8, 8);
+         // we skip the crc in the incoming data and take the frametype
+         checkVector [4] = getBits (data, offset + 6 * 8, 8);
    
-      int size = length < 11 ? length : 11;
-      for (i = 0; i < size; i ++) {
-         checkVector [5 + i]     = getBits (data,  offset + 7 * 8 + i * 8, 8);
-      }
-      checkVector [5 + size]     = getBits (data, offset + 4 * 8, 8); 
-      checkVector [5 + size + 1] = getBits (data, offset + 5 * 8, 8); 
+         int size = length < 11 ? length : 11;
+         for (i = 0; i < size; i ++) {
+            checkVector [5 + i]     = getBits (data,  offset + 7 * 8 + i * 8, 8);
+         }
+         checkVector [5 + size]     = getBits (data, offset + 4 * 8, 8); 
+         checkVector [5 + size + 1] = getBits (data, offset + 5 * 8, 8); 
             
-      if (check_crc_bytes (checkVector, 5 + size ) == 0) { 
-         fprintf (stderr, "crc=X");
-         return;
-      } else { fprintf (stderr, "crc=✓"); }
-   } fprintf(stderr,"\n");
+         if (check_crc_bytes (checkVector, 5 + size ) == 0) { 
+            fprintf (stderr, "crc=X");
+            return;
+         } else { fprintf (stderr, "crc=✓"); }
+      } fprintf(stderr,"\n");
 
-   fprintf(stderr,"DBG::tdc_dataHandler::FrameType=%d off=%d len=%d\n",frametypeIndicator,offset+7*8,length);
-   if (frametypeIndicator == 0)
-      offset = handleFrame_type_0 (data, offset + 7 * 8, length);
-   else
-   if (frametypeIndicator == 1)
-      offset = handleFrame_type_1 (data, offset + 7 * 8, length);
-   else
-      return;   // failure
-   //	fprintf (stderr, "offset is now %d\n", offset);
+      fprintf(stderr,"DBG::tdc_dataHandler::FrameType=%d off=%d len=%d\n",frametypeIndicator,offset+7*8,length);
+      if (frametypeIndicator == 0)
+         offset = handleFrame_type_0 (data, offset + 7 * 8, length);
+      else
+      if (frametypeIndicator == 1)
+         offset = handleFrame_type_1 (data, offset + 7 * 8, length);
+      else
+         return;   // failure
+      //	fprintf (stderr, "offset is now %d\n", offset);
+   }
    if (offset < 0)
       return;
-      }
+   }
 }
 
 int32_t tdc_dataHandler::handleFrame_type_0 (uint8_t *data,
@@ -234,6 +251,24 @@ uint8_t	buffer [length];
 	   bytesOut (buffer, length, 1, ctx);
         return offset + length * 8;
 }
+
+int32_t tdc_dataHandler::handleSSRZFrame (uint8_t *data,
+                                             int32_t offset, int32_t length) {
+int16_t i;
+#ifdef _MSC_VER
+uint8_t	*buffer = (uint8_t *)_alloca(length);
+#else
+uint8_t	buffer [length];
+#endif
+
+	for (i = 0; i < length; i ++)
+	   buffer [i] = getBits_8 (data, offset + i * 8);
+
+	if (bytesOut != nullptr)
+	   bytesOut (buffer, length, 2, ctx);
+        return offset + length * 8;
+}
+
 
 //      The component header CRC is two bytes long,
 //      and based on the ITU-T polynomial x^16 + x*12 + x^5 + 1.

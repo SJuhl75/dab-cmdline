@@ -592,7 +592,7 @@ void dataProcessor::applyFEC(void) {
     
     // Clean up and update error count
     frameBytes.resize(0);
-    //series.resize(0); will be done in processOutVector
+    //series.resize(0); //will be done in processOutVector
     rsErrors += rsek;
 
     // Free dynamically allocated memory
@@ -637,7 +637,7 @@ std::vector<uint8_t> bytes_to_bits(const std::vector<uint8_t>& bytes) {
 // CRC calculation verified using CRC16-GENIBUS -> https://crccalc.com/
 // Orginal code to hand over to add_MSCdatagroup?
 void dataProcessor::processOutVector(const std::vector<uint8_t>& outVector) {
-    /* uint16_t bo=0;
+    /* int16_t bo=0;
     fprintf(stderr,"--> RAW PACKET (%4ld Bytes) <-------------------\n",outVector.size());
     while (bo < outVector.size()) {
         fprintf(stderr,"%02x",outVector[bo]);
@@ -646,9 +646,9 @@ void dataProcessor::processOutVector(const std::vector<uint8_t>& outVector) {
             fprintf(stderr,"\n");
         }
     }
-    fprintf(stderr,"------------------------------------------------\n");*/
+    fprintf(stderr,"------------------------------------------------\n"); */
     
-    const bool debug = false;
+    const bool debug = true;
     uint16_t boi=0; 
     uint8_t  packet_length; 
     uint8_t  continuity_index;
@@ -708,14 +708,15 @@ void dataProcessor::processOutVector(const std::vector<uint8_t>& outVector) {
                     break;
                 case 2: // First packet
                     //fprintf(stderr, "First packet\n");
-                    if (series.size() > 0) {
+                    if (series.size() > (bits.end() - bits.begin()) ) {
                         fprintf(stderr, "First packet series[%ld] ...\n",series.size());
+                        //series.resize(bits.end() - bits.begin());
                         // TBD, what if series is not empty?
                     }   
                     break;
                 case 1: // Last packet
                 case 3: // Single packet
-                    if (debug) fprintf(stderr, "%s AppType=%d packet -> add_mscDG[%ld] ...\n",(firstlast_flags==1)?"Last":"Single",dataProcessor::appType, series.size());
+                    if (debug) fprintf(stderr, "DBG::DataProcessor:%s AppType=%d packet -> add_mscDG[%ld] last=%04x...\n",(firstlast_flags==1)?"Last":"Single",dataProcessor::appType, series.size(),relevant_bytes[relevant_bytes.size()-4] << 8 | relevant_bytes[relevant_bytes.size()-3]);
                     my_dataHandler	-> add_mscDatagroup (series); 
                     series. resize (0);
                     break;

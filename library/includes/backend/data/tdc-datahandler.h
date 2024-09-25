@@ -37,6 +37,8 @@ private:
                                          int32_t offset, int32_t length);
         int32_t handleFrame_type_1      (uint8_t *data,
                                          int32_t offset, int32_t length);
+        int32_t handleSSRZFrame	        (uint8_t *data,
+                                         int32_t offset, int32_t length);
         bool    serviceComponentFrameheaderCRC (uint8_t *, int16_t, int16_t);
 	bytesOut_t	bytesOut;
 	void		*ctx;
